@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 
 	"github.com/duo-labs/webauthn.io/session"
@@ -17,13 +19,68 @@ var webAuthn *webauthn.WebAuthn
 var userDB *userdb
 var sessionStore *session.Store
 
-func main() {
+type CredentialAssertion struct {
+	Response PublicKeyCredentialRequestOptions `json:"publicKey"`
+}
 
+type PublicKeyCredentialRequestOptions struct {
+	Challenge          protocol.Challenge                   `json:"challenge"`
+	Timeout            int                                  `json:"timeout,omitempty"`
+	RelyingPartyID     string                               `json:"rpId,omitempty"`
+	AllowedCredentials []CredentialDescriptor               `json:"allowCredentials,omitempty"`
+	UserVerification   protocol.UserVerificationRequirement `json:"userVerification,omitempty"` // Default is "preferred"
+	Extensions         protocol.AuthenticationExtensions    `json:"extensions,omitempty"`
+}
+
+type CredentialDescriptor struct {
+	// The valid credential types.
+	Type protocol.CredentialType `json:"type"`
+	// CredentialID The ID of a credential to allow/disallow
+	CredentialID []byte `json:"id"`
+	// The authenticator transports that can be used
+	Transport []protocol.AuthenticatorTransport `json:"transports,omitempty"`
+	PublicKey []byte                            `json:"publicKey,omitempty"`
+}
+
+type resp struct {
+	status string
+}
+
+func (p *CredentialAssertion) Unmarshal(
+	data *protocol.CredentialAssertion,
+	userCreds []webauthn.Credential) error {
+	p.Response.Challenge = data.Response.Challenge
+	p.Response.Timeout = data.Response.Timeout
+	p.Response.RelyingPartyID = data.Response.RelyingPartyID
+	p.Response.UserVerification = data.Response.UserVerification
+	p.Response.Extensions = data.Response.Extensions
+
+	var allowedCreds []CredentialDescriptor
+
+	for _, v := range data.Response.AllowedCredentials {
+		for _, v2 := range userCreds {
+			if bytes.Equal(v.CredentialID, v2.ID) {
+				allowedCreds = append(allowedCreds, CredentialDescriptor{
+					Type:         v.Type,
+					CredentialID: v.CredentialID,
+					Transport:    v.Transport,
+					PublicKey:    v2.PublicKey,
+				})
+			}
+		}
+	}
+
+	p.Response.AllowedCredentials = allowedCreds
+
+	return nil
+}
+
+func main() {
 	var err error
 	webAuthn, err = webauthn.New(&webauthn.Config{
-		RPDisplayName: "Foobar Corp.",     // Display Name for your site
-		RPID:          "localhost",        // Generally the domain name for your site
-		RPOrigin:      "http://localhost", // The origin URL for WebAuthn requests
+		RPDisplayName: "Fido2 + LoRa test.",    // Display Name for your site
+		RPID:          "localhost",             // Generally the domain name for your site
+		RPOrigin:      "http://localhost:8010", // The origin URL for WebAuthn requests
 		// RPIcon: "https://duo.com/logo.png", // Optional icon URL for your site
 	})
 
@@ -47,12 +104,22 @@ func main() {
 
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./")))
 
-	serverAddress := ":8080"
+	serverAddress := ":8010"
 	log.Println("starting server at", serverAddress)
 	log.Fatal(http.ListenAndServe(serverAddress, r))
 }
 
+func print_req(r *http.Request) {
+	res, err := httputil.DumpRequest(r, true)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(string(res))
+}
+
 func BeginRegistration(w http.ResponseWriter, r *http.Request) {
+	log.Println("Register start")
+	print_req(r)
 
 	// get username/friendly name
 	vars := mux.Vars(r)
@@ -99,7 +166,8 @@ func BeginRegistration(w http.ResponseWriter, r *http.Request) {
 }
 
 func FinishRegistration(w http.ResponseWriter, r *http.Request) {
-
+	log.Println("Register finish")
+	print_req(r)
 	// get username
 	vars := mux.Vars(r)
 	username := vars["username"]
@@ -108,7 +176,7 @@ func FinishRegistration(w http.ResponseWriter, r *http.Request) {
 	user, err := userDB.GetUser(username)
 	// user doesn't exist
 	if err != nil {
-		log.Println(err)
+		log.Println("Error: ", err)
 		jsonResponse(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -116,32 +184,35 @@ func FinishRegistration(w http.ResponseWriter, r *http.Request) {
 	// load the session data
 	sessionData, err := sessionStore.GetWebauthnSession("registration", r)
 	if err != nil {
-		log.Println(err)
+		log.Println("Error: ", err)
 		jsonResponse(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	credential, err := webAuthn.FinishRegistration(user, sessionData, r)
 	if err != nil {
-		log.Println(err)
+		log.Println("Error: ", err)
 		jsonResponse(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	user.AddCredential(*credential)
 
-	jsonResponse(w, "Registration Success", http.StatusOK)
+	var resp resp
+	resp.status = "Registration Success"
+
+	jsonResponse(w, resp, http.StatusOK)
 }
 
 func BeginLogin(w http.ResponseWriter, r *http.Request) {
-
+	log.Println("Login begin")
+	print_req(r)
 	// get username
 	vars := mux.Vars(r)
 	username := vars["username"]
 
 	// get user
 	user, err := userDB.GetUser(username)
-
 	// user doesn't exist
 	if err != nil {
 		log.Println(err)
@@ -149,8 +220,24 @@ func BeginLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Println("User: ", user)
+
+	pub_key := user.credentials[0].PublicKey
+	if len(pub_key) == 0 {
+		jsonResponse(w, "credential error", http.StatusInternalServerError)
+		return
+	}
+
 	// generate PublicKeyCredentialRequestOptions, session data
 	options, sessionData, err := webAuthn.BeginLogin(user)
+	if err != nil {
+		log.Println("webauthn.BeginLogin failed: ", err)
+		jsonResponse(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var myOptions CredentialAssertion
+	err = myOptions.Unmarshal(options, user.credentials)
 	if err != nil {
 		log.Println(err)
 		jsonResponse(w, err.Error(), http.StatusInternalServerError)
@@ -165,10 +252,12 @@ func BeginLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, options, http.StatusOK)
+	jsonResponse(w, &myOptions, http.StatusOK)
 }
 
 func FinishLogin(w http.ResponseWriter, r *http.Request) {
+	log.Println("Login finish")
+	print_req(r)
 
 	// get username
 	vars := mux.Vars(r)
