@@ -138,8 +138,13 @@ func BeginRegistration(w http.ResponseWriter, r *http.Request) {
 		userDB.PutUser(user)
 	}
 
+	var rk bool = true
+
 	registerOptions := func(credCreationOpts *protocol.PublicKeyCredentialCreationOptions) {
 		credCreationOpts.CredentialExcludeList = user.CredentialExcludeList()
+		// default want resident key
+		credCreationOpts.AuthenticatorSelection.RequireResidentKey = &rk
+		credCreationOpts.AuthenticatorSelection.UserVerification = protocol.VerificationDiscouraged
 	}
 
 	// generate PublicKeyCredentialCreationOptions, session data
