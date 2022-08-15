@@ -70,6 +70,15 @@ func (p *CredentialAssertion) Unmarshal(
 		}
 	}
 
+	/* hopefully sort by most recently registered */
+	/*
+		for i := 1; i < len(allowedCreds)/2; i++ {
+			var tmp = allowedCreds[i]
+			allowedCreds[i] = allowedCreds[len(allowedCreds)-0x1-i]
+			allowedCreds[len(allowedCreds)-0x1-i] = tmp
+		}
+	*/
+
 	p.Response.AllowedCredentials = allowedCreds
 
 	return nil
@@ -286,14 +295,22 @@ func FinishLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Println("User: ", user.credentials)
+
 	// in an actual implementation, we should perform additional checks on
 	// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
 	// and then increment the credentials counter
-	_, err = webAuthn.FinishLogin(user, sessionData, r)
+	v, err := webAuthn.FinishLogin(user, sessionData, r)
 	if err != nil {
 		log.Println(err)
 		jsonResponse(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	log.Println("Test: ", v.Authenticator.SignCount)
+
+	for _, v := range user.credentials {
+		log.Println("SignCount: ", v.Authenticator.SignCount)
 	}
 
 	// handle successful login
