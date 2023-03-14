@@ -24,10 +24,11 @@ type CredentialAssertion struct {
 }
 
 type PublicKeyCredentialRequestOptions struct {
-	Challenge          protocol.Challenge                   `json:"challenge"`
-	Timeout            int                                  `json:"timeout,omitempty"`
-	RelyingPartyID     string                               `json:"rpId,omitempty"`
-	AllowedCredentials []CredentialDescriptor               `json:"allowCredentials,omitempty"`
+	Challenge      protocol.Challenge `json:"challenge"`
+	Timeout        int                `json:"timeout,omitempty"`
+	RelyingPartyID string             `json:"rpId,omitempty"`
+	//AllowedCredentials []CredentialDescriptor               `json:"allowCredentials,omitempty"`
+	AllowedCredentials []CredentialDescriptor               `json:"-"`                          // Ignore because allowlist is optional and we are optimizing for small size
 	UserVerification   protocol.UserVerificationRequirement `json:"userVerification,omitempty"` // Default is "preferred"
 	Extensions         protocol.AuthenticationExtensions    `json:"extensions,omitempty"`
 }
@@ -300,17 +301,11 @@ func FinishLogin(w http.ResponseWriter, r *http.Request) {
 	// in an actual implementation, we should perform additional checks on
 	// the returned 'credential', i.e. check 'credential.Authenticator.CloneWarning'
 	// and then increment the credentials counter
-	v, err := webAuthn.FinishLogin(user, sessionData, r)
+	_, err = webAuthn.FinishLogin(user, sessionData, r)
 	if err != nil {
 		log.Println(err)
 		jsonResponse(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-
-	log.Println("Test: ", v.Authenticator.SignCount)
-
-	for _, v := range user.credentials {
-		log.Println("SignCount: ", v.Authenticator.SignCount)
 	}
 
 	// handle successful login
